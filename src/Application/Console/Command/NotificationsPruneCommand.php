@@ -51,8 +51,8 @@ final class NotificationsPruneCommand extends Command
 
             return Command::INVALID;
         }
-        if (!self::isWholeNumber($batchOption) || (int) $batchOption < 1) {
-            $output->writeln('<error>--batch-size is a whole number of at least 1.</error>');
+        if (!self::isWholeNumber($batchOption) || (int) $batchOption < 1 || (int) $batchOption > NotificationRetention::MAX_BATCH_SIZE) {
+            $output->writeln('<error>--batch-size is a whole number from 1 to ' . NotificationRetention::MAX_BATCH_SIZE . '.</error>');
 
             return Command::INVALID;
         }

@@ -25,7 +25,8 @@ use Semitexa\Orm\Metadata\HasColumnReferences;
  * recipient, and NULLs never collide.
  */
 #[FromTable(name: 'notifications_inbox')]
-#[Index(columns: ['recipient_key', 'read_at'], name: 'idx_notifications_inbox_unread')]
+// read_at, then created_at: unread() filters on the one and orders by the other.
+#[Index(columns: ['recipient_key', 'read_at', 'created_at'], name: 'idx_notifications_inbox_unread')]
 #[Index(columns: ['recipient_key', 'created_at'], name: 'idx_notifications_inbox_latest')]
 #[Index(columns: ['created_at'], name: 'idx_notifications_inbox_created')]
 #[Index(columns: ['recipient_key', 'idempotency_key'], unique: true, name: 'uniq_notifications_inbox_idempotency')]

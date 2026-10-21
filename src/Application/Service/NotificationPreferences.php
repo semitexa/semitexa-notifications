@@ -48,36 +48,32 @@ final class NotificationPreferences
             'updated_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(self::DATETIME),
         ];
 
-        // Update, else insert. The unique key is exact (recipient_key is a
-        // hash), so an insert refused by it means this recipient's own row
-        // appeared in between - another request, or a forget() racing us -
-        // and one more round settles it.
-        for ($attempt = 1; ; $attempt++) {
-            if ($this->update($key, $type, $channel, $values)) {
-                return;
-            }
+        // Update, else insert.
+        if ($this->update($key, $type, $channel, $values)) {
+            return;
+        }
 
-            try {
-                $this->orm->getQueryAdapter()->execute(sprintf(
-                    'INSERT INTO %s (id, tenant_id, recipient_id, recipient_key, type, channel, enabled, updated_at)'
-                    . ' VALUES (:id, :tenant_id, :recipient_id, :recipient_key, :type, :channel, :enabled, :updated_at)',
-                    SqlIdentifier::quote(self::TABLE),
-                ), [
-                    'id'            => Uuid7::generate(),
-                    'tenant_id'     => $key->tenantId,
-                    'recipient_id'  => $key->recipientId,
-                    'recipient_key' => $key->storageKey,
-                    'type'          => $type,
-                    'channel'       => $channel,
-                    ...$values,
-                ]);
-
-                return;
-            } catch (ConstraintViolationException $e) {
-                if ($attempt >= 3) {
-                    throw new \RuntimeException('The notification preference could not be stored: it kept changing underneath. Try again.', 0, $e);
-                }
-            }
+        try {
+            $this->orm->getQueryAdapter()->execute(sprintf(
+                'INSERT INTO %s (id, tenant_id, recipient_id, recipient_key, type, channel, enabled, updated_at)'
+                . ' VALUES (:id, :tenant_id, :recipient_id, :recipient_key, :type, :channel, :enabled, :updated_at)',
+                SqlIdentifier::quote(self::TABLE),
+            ), [
+                'id'            => Uuid7::generate(),
+                'tenant_id'     => $key->tenantId,
+                'recipient_id'  => $key->recipientId,
+                'recipient_key' => $key->storageKey,
+                'type'          => $type,
+                'channel'       => $channel,
+                ...$values,
+            ]);
+        } catch (ConstraintViolationException) {
+            // The unique key is exact (recipient_key is a hash): this
+            // recipient's own row appeared in between. Inside a transaction
+            // the SELECT in update() reads its snapshot and would not see it
+            // however often it asked (a double-submit failed three times and
+            // threw); an UPDATE reads the latest committed row.
+            $this->write($key, $type, $channel, $values);
         }
     }
 
@@ -193,13 +189,21 @@ final class NotificationPreferences
             return false;
         }
 
-        $adapter->execute(sprintf(
-            'UPDATE %s SET enabled = :enabled, updated_at = :updated_at WHERE %s',
-            SqlIdentifier::quote(self::TABLE),
-            $where,
-        ), [...$params, ...$values]);
+        $this->write($key, $type, $channel, $values);
 
         return true;
+    }
+
+    /** @param array{enabled: int, updated_at: string} $values */
+    private function write(RecipientKey $key, string $type, string $channel, array $values): void
+    {
+        [$scope, $params] = $this->scope($key);
+
+        $this->orm->getQueryAdapter()->execute(sprintf(
+            'UPDATE %s SET enabled = :enabled, updated_at = :updated_at WHERE %s AND type = :type AND channel = :channel',
+            SqlIdentifier::quote(self::TABLE),
+            $scope,
+        ), [...$params, 'type' => $type, 'channel' => $channel, ...$values]);
     }
 
     private static function text(mixed $value): string
