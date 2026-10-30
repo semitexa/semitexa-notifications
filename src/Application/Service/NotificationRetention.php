@@ -20,6 +20,7 @@ use Semitexa\Orm\OrmManager;
 final class NotificationRetention
 {
     public const int DEFAULT_BATCH_SIZE = 1000;
+    public const int MAX_BATCH_SIZE = 10000;
 
     private const string DATETIME = 'Y-m-d H:i:s';
 
@@ -35,8 +36,10 @@ final class NotificationRetention
         if ($days < 1) {
             throw new \InvalidArgumentException('Retention is at least one day.');
         }
-        if ($batchSize < 1) {
-            throw new \InvalidArgumentException('The batch size is at least 1.');
+        // One placeholder per id in the DELETE: MySQL refuses more than
+        // 65,535 in a statement, SQLite more than 32,766.
+        if ($batchSize < 1 || $batchSize > self::MAX_BATCH_SIZE) {
+            throw new \InvalidArgumentException('The batch size is between 1 and ' . self::MAX_BATCH_SIZE . '.');
         }
 
         $cutoff = ($now ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC')))

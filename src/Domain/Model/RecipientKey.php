@@ -47,8 +47,10 @@ final readonly class RecipientKey
         if (trim($tenantId) !== $tenantId) {
             throw new \InvalidArgumentException('A notification recipient\'s tenant id cannot start or end with a space.');
         }
-        if (strlen($recipientId) > self::MAX_LENGTH || strlen($tenantId) > self::MAX_LENGTH) {
-            throw new \InvalidArgumentException('A notification recipient id and tenant id are at most ' . self::MAX_LENGTH . ' bytes.');
+        // Characters, as the VARCHAR(64) columns count them: a 33-letter
+        // Cyrillic id is 66 bytes and fits.
+        if (mb_strlen($recipientId) > self::MAX_LENGTH || mb_strlen($tenantId) > self::MAX_LENGTH) {
+            throw new \InvalidArgumentException('A notification recipient id and tenant id are at most ' . self::MAX_LENGTH . ' characters.');
         }
         if (preg_match('/[\x00-\x1F\x7F]/', $tenantId . $recipientId) === 1) {
             throw new \InvalidArgumentException('A notification recipient id and tenant id cannot contain control characters.');

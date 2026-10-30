@@ -12,7 +12,6 @@ use Semitexa\Notifications\Domain\Model\RecipientKey;
 use Semitexa\Notifications\Domain\Service\NotificationNames;
 use Semitexa\Orm\Adapter\SqlIdentifier;
 use Semitexa\Orm\Application\Service\Uuid7;
-use Semitexa\Orm\Exception\ConstraintViolationException;
 use Semitexa\Orm\OrmManager;
 
 /**
@@ -48,37 +47,28 @@ final class NotificationPreferences
             'updated_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(self::DATETIME),
         ];
 
-        // Update, else insert. The unique key is exact (recipient_key is a
-        // hash), so an insert refused by it means this recipient's own row
-        // appeared in between - another request, or a forget() racing us -
-        // and one more round settles it.
-        for ($attempt = 1; ; $attempt++) {
-            if ($this->update($key, $type, $channel, $values)) {
-                return;
-            }
-
-            try {
-                $this->orm->getQueryAdapter()->execute(sprintf(
-                    'INSERT INTO %s (id, tenant_id, recipient_id, recipient_key, type, channel, enabled, updated_at)'
-                    . ' VALUES (:id, :tenant_id, :recipient_id, :recipient_key, :type, :channel, :enabled, :updated_at)',
-                    SqlIdentifier::quote(self::TABLE),
-                ), [
-                    'id'            => Uuid7::generate(),
-                    'tenant_id'     => $key->tenantId,
-                    'recipient_id'  => $key->recipientId,
-                    'recipient_key' => $key->storageKey,
-                    'type'          => $type,
-                    'channel'       => $channel,
-                    ...$values,
-                ]);
-
-                return;
-            } catch (ConstraintViolationException $e) {
-                if ($attempt >= 3) {
-                    throw new \RuntimeException('The notification preference could not be stored: it kept changing underneath. Try again.', 0, $e);
-                }
-            }
-        }
+        // One statement, insert or update: the unique key (recipient_key is
+        // the exact hash, with type and channel) decides. As a write it sees
+        // the latest committed row even inside a REPEATABLE READ transaction,
+        // where a SELECT reads the snapshot; and there is no window between a
+        // refused insert and the update for another request to delete the row
+        // in, which left the switch unstored (review of notifications#1).
+        $this->orm->getQueryAdapter()->execute(sprintf(
+            'INSERT INTO %s (id, tenant_id, recipient_id, recipient_key, type, channel, enabled, updated_at)'
+            . ' VALUES (:id, :tenant_id, :recipient_id, :recipient_key, :type, :channel, :enabled, :updated_at) %s',
+            SqlIdentifier::quote(self::TABLE),
+            $this->orm->getDriver() === 'mysql'
+                ? 'ON DUPLICATE KEY UPDATE enabled = VALUES(enabled), updated_at = VALUES(updated_at)'
+                : 'ON CONFLICT (recipient_key, type, channel) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at',
+        ), [
+            'id'            => Uuid7::generate(),
+            'tenant_id'     => $key->tenantId,
+            'recipient_id'  => $key->recipientId,
+            'recipient_key' => $key->storageKey,
+            'type'          => $type,
+            'channel'       => $channel,
+            ...$values,
+        ]);
     }
 
     /** Drop a stored switch, so the default (or the '*' switch) applies again. */
@@ -168,38 +158,6 @@ final class NotificationPreferences
         }
 
         return $preferences;
-    }
-
-    /**
-     * @param array{enabled: int, updated_at: string} $values
-     * @return bool whether this recipient's switch exists (and now holds $values)
-     * @phpstan-impure
-     */
-    private function update(RecipientKey $key, string $type, string $channel, array $values): bool
-    {
-        $adapter = $this->orm->getQueryAdapter();
-        [$scope, $params] = $this->scope($key);
-        $params += ['type' => $type, 'channel' => $channel];
-        $where = $scope . ' AND type = :type AND channel = :channel';
-
-        // Looked up first rather than judged by the UPDATE's row count: MySQL
-        // counts only rows it CHANGED, so re-saving the same value reads as 0.
-        $exists = $adapter->execute(sprintf(
-            'SELECT id FROM %s WHERE %s',
-            SqlIdentifier::quote(self::TABLE),
-            $where,
-        ), $params)->fetchOne();
-        if ($exists === null) {
-            return false;
-        }
-
-        $adapter->execute(sprintf(
-            'UPDATE %s SET enabled = :enabled, updated_at = :updated_at WHERE %s',
-            SqlIdentifier::quote(self::TABLE),
-            $where,
-        ), [...$params, ...$values]);
-
-        return true;
     }
 
     private static function text(mixed $value): string

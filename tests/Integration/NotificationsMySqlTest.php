@@ -165,6 +165,35 @@ final class NotificationsMySqlTest extends TestCase
         }
     }
 
+    /** A double-submit inside a transaction: the other request's row is outside this one's snapshot. */
+    #[Test]
+    public function a_switch_committed_after_the_caller_s_snapshot_is_updated_not_refused(): void
+    {
+        $other = new OrmManager();
+        try {
+            $ada = new Recipient('ada', $this->tenant);
+            $key = RecipientKey::of($ada);
+
+            $this->orm->getTransactionManager()->run(function () use ($ada, $key, $other): void {
+                // The first read fixes this transaction's REPEATABLE READ snapshot...
+                self::assertSame([], $this->preferences->all($ada));
+                // ...then the other request stores the same switch and commits.
+                $other->getAdapter()->execute(
+                    'INSERT INTO notifications_preferences (id, tenant_id, recipient_id, recipient_key, type, channel, enabled, updated_at)'
+                    . ' VALUES (:id, :t, :r, :k, :type, :channel, 1, :u)',
+                    ['id' => \Semitexa\Orm\Application\Service\Uuid7::generate(), 't' => $key->tenantId, 'r' => $key->recipientId, 'k' => $key->storageKey, 'type' => 'orders.shipped', 'channel' => 'mail', 'u' => '2026-10-21 12:00:00'],
+                );
+
+                $this->preferences->set($ada, 'orders.shipped', 'mail', false);
+            });
+
+            self::assertFalse($this->preferences->allows($ada, 'orders.shipped', 'mail'), 'the later choice stands');
+            self::assertCount(1, $this->preferences->all($ada));
+        } finally {
+            $other->shutdown();
+        }
+    }
+
     #[Test]
     public function prune_deletes_old_rows_in_batches(): void
     {
